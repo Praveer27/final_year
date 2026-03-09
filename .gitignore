@@ -36,13 +36,23 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Data
+# Data & Large Files
 data/
 data/videos/*
 data/frames/*
 data/keypoints/*
 data/processed/*
+data/isl_dataset/*
 !data/.gitkeep
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.h5
+*.hdf5
+*.pkl
+*.pickle
 
 # Models & PyTorch
 models/checkpoints/*
@@ -78,4 +88,11 @@ htmlcov/
 .env
 .env.local
 
-*.zip
+# Node modules (for frontend)
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Frontend build
+frontend/build/
+frontend/dist/
