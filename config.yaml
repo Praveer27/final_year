@@ -1,0 +1,138 @@
+# Gesture2Speech Configuration File
+
+project:
+  name: "Gesture2Speech"
+  version: "2.0.0"
+  description: "Advanced Sign Language to Speech Recognition System"
+
+paths:
+  # Base paths (relative to project root)
+  data_root: "data"
+  videos: "data/videos"
+  frames: "data/frames"
+  keypoints: "data/keypoints"
+  models: "models"
+  logs: "logs"
+  results: "results"
+  checkpoints: "models/checkpoints"
+
+# Video Processing Configuration
+video_processing:
+  target_fps: 30
+  max_frames: 200
+  frame_size: [224, 224]
+  video_extensions: [".mp4", ".avi", ".mov", ".mkv"]
+  
+# MediaPipe Hand Detection Configuration
+mediapipe:
+  static_image_mode: false
+  max_num_hands: 2
+  min_detection_confidence: 0.7
+  min_tracking_confidence: 0.5
+  model_complexity: 1  # 0 or 1
+
+# Data Augmentation Configuration
+augmentation:
+  enabled: true
+  techniques:
+    horizontal_flip: 0.5
+    rotation_range: 25
+    zoom_range: [0.8, 1.2]
+    brightness_range: [0.8, 1.2]
+    gaussian_noise: 0.02
+    gaussian_blur: 0.5
+  augmentation_factor: 3  # Number of augmented samples per original
+
+# Dataset Configuration
+dataset:
+  categories:
+    pronouns: ["he", "i", "she", "they", "we", "you"]
+    adjectives: ["clean", "dirty", "strong", "weak"]
+    nouns: ["boy", "girl"]
+    places: ["hospital", "house", "school", "university"]
+  
+  split_ratio:
+    train: 0.7
+    validation: 0.15
+    test: 0.15
+  
+  batch_size: 32
+  shuffle: true
+  num_workers: 4
+
+# Model Configuration
+model:
+  architecture: "lstm"  # Options: lstm, gru, transformer, cnn_lstm
+  
+  lstm:
+    hidden_size: 256
+    num_layers: 3
+    dropout: 0.3
+    bidirectional: true
+  
+  transformer:
+    d_model: 256
+    nhead: 8
+    num_encoder_layers: 6
+    dim_feedforward: 1024
+    dropout: 0.1
+  
+  cnn_lstm:
+    cnn_filters: [64, 128, 256]
+    lstm_hidden: 256
+    lstm_layers: 2
+    dropout: 0.3
+
+# Training Configuration
+training:
+  epochs: 100
+  learning_rate: 0.001
+  optimizer: "adam"  # Options: adam, sgd, rmsprop
+  loss_function: "categorical_crossentropy"
+  metrics: ["accuracy", "precision", "recall", "f1"]
+  
+  early_stopping:
+    enabled: true
+    patience: 15
+    monitor: "val_loss"
+    mode: "min"
+  
+  reduce_lr:
+    enabled: true
+    factor: 0.5
+    patience: 5
+    min_lr: 0.00001
+  
+  checkpoint:
+    save_best_only: true
+    monitor: "val_accuracy"
+    mode: "max"
+
+# Inference Configuration
+inference:
+  confidence_threshold: 0.7
+  top_k_predictions: 3
+  real_time_fps: 30
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+  rotation: "100 MB"
+  retention: "30 days"
+
+# Web Interface Configuration
+web:
+  host: "0.0.0.0"
+  port: 5000
+  debug: false
+  upload_folder: "uploads"
+  max_upload_size: 100  # MB
+
+# Performance Configuration
+performance:
+  use_gpu: true
+  mixed_precision: true
+  num_threads: 4
+
+# Made with Bob
