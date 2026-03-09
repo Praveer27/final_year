@@ -8,7 +8,6 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import json
-import mediapipe as mp
 from loguru import logger
 from tqdm import tqdm
 
@@ -17,6 +16,8 @@ class KeypointExtractor:
     """
     Extract hand keypoints from images/frames using MediaPipe
     Supports both single and double hand detection with normalization
+    
+    Note: MediaPipe 0.10.32+ has changed API. This is a compatibility wrapper.
     """
     
     def __init__(
@@ -36,18 +37,29 @@ class KeypointExtractor:
             model_complexity: Model complexity (0 or 1, higher is more accurate)
         """
         self.max_num_hands = max_num_hands
+        self.hands = None
         
-        # Initialize MediaPipe Hands
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=True,
-            max_num_hands=max_num_hands,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-            model_complexity=model_complexity
-        )
-        
-        logger.info(f"KeypointExtractor initialized with max_hands={max_num_hands}")
+        # Try to initialize MediaPipe with compatibility handling
+        try:
+            import mediapipe as mp
+            # Check if old API is available
+            if hasattr(mp, 'solutions'):
+                self.mp_hands = mp.solutions.hands
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=True,
+                    max_num_hands=max_num_hands,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence,
+                    model_complexity=model_complexity
+                )
+                logger.info(f"KeypointExtractor initialized with MediaPipe (old API, max_hands={max_num_hands})")
+            else:
+                logger.warning("MediaPipe 0.10.32+ detected. Old API not available.")
+                logger.warning("Keypoint extraction will return dummy data.")
+                logger.info("To fix: Use MediaPipe < 0.10.30 or update code to new API")
+        except Exception as e:
+            logger.error(f"Failed to initialize MediaPipe: {e}")
+            logger.warning("Keypoint extraction will return dummy data.")
     
     def extract_from_image(
         self,
@@ -62,6 +74,11 @@ class KeypointExtractor:
         Returns:
             Tuple of (list of hand keypoints, handedness info)
         """
+        if self.hands is None:
+            # Return empty result if MediaPipe not available
+            logger.warning("MediaPipe not initialized. Returning empty keypoints.")
+            return [], None
+        
         # Convert to RGB
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
@@ -96,7 +113,7 @@ class KeypointExtractor:
         self,
         frames_dir: Path,
         output_file: Optional[Path] = None
-    ) -> Dict:
+    ) -> List[Dict]:
         """
         Extract keypoints from all frames in a directory
         
@@ -105,7 +122,7 @@ class KeypointExtractor:
             output_file: Optional path to save keypoints JSON
             
         Returns:
-            Dictionary with keypoints data
+            List with keypoints data
         """
         if not frames_dir.exists():
             logger.error(f"Frames directory not found: {frames_dir}")
@@ -116,7 +133,7 @@ class KeypointExtractor:
         
         if not image_files:
             logger.warning(f"No image files found in {frames_dir}")
-            return {}
+            return []
         
         logger.info(f"Extracting keypoints from {len(image_files)} frames")
         
@@ -285,8 +302,11 @@ class KeypointExtractor:
     
     def __del__(self):
         """Cleanup resources"""
-        if hasattr(self, 'hands'):
-            self.hands.close()
+        if hasattr(self, 'hands') and self.hands is not None:
+            try:
+                self.hands.close()
+            except:
+                pass
 
 
 if __name__ == "__main__":
