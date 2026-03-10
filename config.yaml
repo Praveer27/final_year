@@ -19,17 +19,39 @@ paths:
 # Video Processing Configuration
 video_processing:
   target_fps: 30
+
+  # Keep reasonable; increase only if needed
   max_frames: 200
-  frame_size: [224, 224]
-  video_extensions: [".mp4", ".avi", ".mov", ".mkv"]
-  
+
+  # IMPORTANT: bigger frames => much better hand detection than 224x224
+  # Good starting point:
+  frame_size: [960, 540]
+  # Alternative (square):
+  # frame_size: [512, 512]
+
+  # Include uppercase variants in case your code matches extensions case-sensitively
+  video_extensions:
+    - ".mp4"
+    - ".avi"
+    - ".mov"
+    - ".mkv"
+    - ".MP4"
+    - ".AVI"
+    - ".MOV"
+    - ".MKV"
+
 # MediaPipe Hand Detection Configuration
 mediapipe:
+  # For video frames, tracking mode is usually better than static mode
   static_image_mode: false
   max_num_hands: 2
-  min_detection_confidence: 0.7
-  min_tracking_confidence: 0.5
-  model_complexity: 1  # 0 or 1
+
+  # Lower thresholds to increase detections (you were getting very low detections)
+  min_detection_confidence: 0.3
+  min_tracking_confidence: 0.3
+
+  # 1 is usually fine; 0 is faster but less accurate
+  model_complexity: 1
 
 # Data Augmentation Configuration
 augmentation:
@@ -41,42 +63,54 @@ augmentation:
     brightness_range: [0.8, 1.2]
     gaussian_noise: 0.02
     gaussian_blur: 0.5
-  augmentation_factor: 3  # Number of augmented samples per original
+  augmentation_factor: 3
 
 # Dataset Configuration
 dataset:
   categories:
-    pronouns: ["he", "i", "she", "they", "we", "you"]
-    adjectives: ["clean", "dirty", "strong", "weak"]
-    nouns: ["boy", "girl"]
-    places: ["hospital", "house", "school", "university"]
-  
+    # Update these to match your actual gesture folder names.
+    # Your folders currently look like: "1. loud", "2. quiet", "3. happy", ...
+    adjectives:
+      - "1. loud"
+      - "2. quiet"
+      - "3. happy"
+      - "4. sad"
+      - "5. Beautiful"
+      - "6. Ugly"
+      - "7. Deaf"
+      - "8. Blind"
+
+    # Leave others empty if you haven't added those videos yet
+    pronouns: []
+    nouns: []
+    places: []
+
   split_ratio:
     train: 0.7
     validation: 0.15
     test: 0.15
-  
-  batch_size: 32
+
+  batch_size: 16          # safer default on CPU / laptop
   shuffle: true
-  num_workers: 4
+  num_workers: 0          # macOS stability (increase later if needed)
 
 # Model Configuration
 model:
   architecture: "lstm"  # Options: lstm, gru, transformer, cnn_lstm
-  
+
   lstm:
     hidden_size: 256
     num_layers: 3
     dropout: 0.3
     bidirectional: true
-  
+
   transformer:
     d_model: 256
     nhead: 8
     num_encoder_layers: 6
     dim_feedforward: 1024
     dropout: 0.1
-  
+
   cnn_lstm:
     cnn_filters: [64, 128, 256]
     lstm_hidden: 256
@@ -87,22 +121,22 @@ model:
 training:
   epochs: 100
   learning_rate: 0.001
-  optimizer: "adam"  # Options: adam, sgd, rmsprop
+  optimizer: "adam"
   loss_function: "categorical_crossentropy"
   metrics: ["accuracy", "precision", "recall", "f1"]
-  
+
   early_stopping:
     enabled: true
     patience: 15
     monitor: "val_loss"
     mode: "min"
-  
+
   reduce_lr:
     enabled: true
     factor: 0.5
     patience: 5
     min_lr: 0.00001
-  
+
   checkpoint:
     save_best_only: true
     monitor: "val_accuracy"
@@ -116,7 +150,7 @@ inference:
 
 # Logging Configuration
 logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
   format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
   rotation: "100 MB"
   retention: "30 days"
@@ -131,8 +165,8 @@ web:
 
 # Performance Configuration
 performance:
+  # Your logs show it’s running on CPU; keep GPU true if you later add a supported backend
   use_gpu: true
-  mixed_precision: true
+  mixed_precision: false   # safer unless you’ve validated mixed precision works in your env
   num_threads: 4
 
-# Made with Bob

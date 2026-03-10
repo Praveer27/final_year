@@ -21,7 +21,7 @@ function UploadVideo() {
     formData.append('video', selectedFile);
 
     try {
-      const response = await fetch('/api/predict/video', {
+      const response = await fetch('http://localhost:5001/api/predict/video', {
         method: 'POST',
         body: formData
       });

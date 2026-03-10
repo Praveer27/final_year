@@ -12,7 +12,6 @@ function App() {
   const [backendStatus, setBackendStatus] = useState('checking');
 
   useEffect(() => {
-    // Check backend health
     fetch('/api/health')
       .then(res => res.json())
       .then(data => {
@@ -24,41 +23,30 @@ function App() {
   return (
     <Router>
       <div className="App">
-        {/* Navigation Bar */}
         <nav className="navbar">
           <div className="nav-container">
             <Link to="/" className="nav-logo">
-              🤟 Gesture2Speech
+              Gesture2Speech
             </Link>
+
             <ul className="nav-menu">
-              <li className="nav-item">
-                <Link to="/" className="nav-link">Home</Link>
-              </li>
-              <li className="nav-item">
-                <Link to="/webcam" className="nav-link">Webcam</Link>
-              </li>
-              <li className="nav-item">
-                <Link to="/upload-image" className="nav-link">Upload Image</Link>
-              </li>
-              <li className="nav-item">
-                <Link to="/upload-video" className="nav-link">Upload Video</Link>
-              </li>
-              <li className="nav-item">
-                <Link to="/dashboard" className="nav-link">Dashboard</Link>
-              </li>
-              <li className="nav-item">
-                <Link to="/about" className="nav-link">About</Link>
-              </li>
+              <li className="nav-item"><Link to="/" className="nav-link">Home</Link></li>
+              <li className="nav-item"><Link to="/webcam" className="nav-link">Webcam</Link></li>
+              <li className="nav-item"><Link to="/upload-image" className="nav-link">Upload Image</Link></li>
+              <li className="nav-item"><Link to="/upload-video" className="nav-link">Upload Video</Link></li>
+              <li className="nav-item"><Link to="/dashboard" className="nav-link">Dashboard</Link></li>
+              <li className="nav-item"><Link to="/about" className="nav-link">About</Link></li>
             </ul>
+
             <div className={`status-indicator ${backendStatus}`}>
-              {backendStatus === 'connected' && '🟢 Connected'}
-              {backendStatus === 'disconnected' && '🔴 Disconnected'}
-              {backendStatus === 'checking' && '🟡 Checking...'}
+              {backendStatus === 'connected' && 'Connected'}
+              {backendStatus === 'disconnected' && 'Disconnected'}
+              {backendStatus === 'checking' && 'Checking...'}
+              {backendStatus === 'error' && 'Error'}
             </div>
           </div>
         </nav>
 
-        {/* Routes */}
         <div className="main-content">
           <Routes>
             <Route path="/" element={<Home />} />
@@ -70,10 +58,9 @@ function App() {
           </Routes>
         </div>
 
-        {/* Footer */}
         <footer className="footer">
           <p>© 2024 Gesture2Speech - Indian Sign Language Recognition System</p>
-          <p>Built with ❤️ for accessibility</p>
+          <p>Built for accessibility</p>
         </footer>
       </div>
     </Router>
@@ -81,5 +68,3 @@ function App() {
 }
 
 export default App;
-
-// Made with Bob

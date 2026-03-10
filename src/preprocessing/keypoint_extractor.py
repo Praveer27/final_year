@@ -3,327 +3,281 @@ Advanced Keypoint Extraction Module
 Extracts and processes hand keypoints from frames using MediaPipe
 """
 
+import json
+import re
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-from pathlib import Path
-from typing import List, Dict, Tuple, Optional
-import json
 from loguru import logger
 from tqdm import tqdm
 
 
 class KeypointExtractor:
     """
-    Extract hand keypoints from images/frames using MediaPipe
-    Supports both single and double hand detection with normalization
-    
-    Note: MediaPipe 0.10.32+ has changed API. This is a compatibility wrapper.
+    Extract hand keypoints from images/frames using MediaPipe.
+
+    Outputs per-frame records containing:
+      - video_id (parent folder name under gesture directory)
+      - frame_idx (parsed from filename pattern *_frame_0001)
+      - frame_path (relative path under the gesture directory)
+      - hands (list of detected hands)
     """
-    
+
     def __init__(
         self,
         max_num_hands: int = 2,
         min_detection_confidence: float = 0.7,
         min_tracking_confidence: float = 0.5,
-        model_complexity: int = 1
+        model_complexity: int = 1,
+        static_image_mode: bool = False,
     ):
-        """
-        Initialize keypoint extractor
-        
-        Args:
-            max_num_hands: Maximum number of hands to detect (1 or 2)
-            min_detection_confidence: Minimum confidence for detection
-            min_tracking_confidence: Minimum confidence for tracking
-            model_complexity: Model complexity (0 or 1, higher is more accurate)
-        """
         self.max_num_hands = max_num_hands
         self.hands = None
-        
-        # Try to initialize MediaPipe with compatibility handling
+
         try:
             import mediapipe as mp
-            # Check if old API is available
-            if hasattr(mp, 'solutions'):
+
+            if hasattr(mp, "solutions"):
                 self.mp_hands = mp.solutions.hands
                 self.hands = self.mp_hands.Hands(
-                    static_image_mode=True,
+                    static_image_mode=static_image_mode,  # IMPORTANT: False for video sequences
                     max_num_hands=max_num_hands,
                     min_detection_confidence=min_detection_confidence,
                     min_tracking_confidence=min_tracking_confidence,
-                    model_complexity=model_complexity
+                    model_complexity=model_complexity,
                 )
-                logger.info(f"KeypointExtractor initialized with MediaPipe (old API, max_hands={max_num_hands})")
+                logger.info(
+                    "KeypointExtractor initialized with MediaPipe solutions API "
+                    f"(static_image_mode={static_image_mode}, max_hands={max_num_hands}, "
+                    f"min_det={min_detection_confidence}, min_track={min_tracking_confidence})"
+                )
             else:
-                logger.warning("MediaPipe 0.10.32+ detected. Old API not available.")
-                logger.warning("Keypoint extraction will return dummy data.")
-                logger.info("To fix: Use MediaPipe < 0.10.30 or update code to new API")
+                logger.warning("MediaPipe installed but 'solutions' API not available.")
+                logger.warning("Keypoint extraction will return empty keypoints.")
         except Exception as e:
             logger.error(f"Failed to initialize MediaPipe: {e}")
-            logger.warning("Keypoint extraction will return dummy data.")
-    
-    def extract_from_image(
-        self,
-        image: np.ndarray
-    ) -> Tuple[List[Dict], Optional[str]]:
+            logger.warning("Keypoint extraction will return empty keypoints.")
+
+    def extract_from_image(self, image: np.ndarray) -> Tuple[List[Dict], Optional[object]]:
         """
-        Extract keypoints from a single image
-        
-        Args:
-            image: Input image (BGR format)
-            
-        Returns:
-            Tuple of (list of hand keypoints, handedness info)
+        Extract keypoints from a single image (BGR).
+        Returns: (hands_list, raw_results)
         """
         if self.hands is None:
-            # Return empty result if MediaPipe not available
-            logger.warning("MediaPipe not initialized. Returning empty keypoints.")
             return [], None
-        
-        # Convert to RGB
+
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Process image
         results = self.hands.process(image_rgb)
-        
-        keypoints_list = []
-        
-        if results.multi_hand_landmarks:
-            for idx, (hand_landmarks, handedness) in enumerate(
-                zip(results.multi_hand_landmarks, results.multi_handedness)
-            ):
+
+        keypoints_list: List[Dict] = []
+        if results and results.multi_hand_landmarks:
+            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
                 keypoints = []
-                for landmark in hand_landmarks.landmark:
-                    keypoints.append({
-                        'x': landmark.x,
-                        'y': landmark.y,
-                        'z': landmark.z,
-                        'visibility': getattr(landmark, 'visibility', 1.0)
-                    })
-                
-                hand_info = {
-                    'keypoints': keypoints,
-                    'handedness': handedness.classification[0].label,
-                    'confidence': handedness.classification[0].score
-                }
-                keypoints_list.append(hand_info)
-        
+                for lm in hand_landmarks.landmark:
+                    keypoints.append(
+                        {
+                            "x": float(lm.x),
+                            "y": float(lm.y),
+                            "z": float(lm.z),
+                            "visibility": float(getattr(lm, "visibility", 1.0)),
+                        }
+                    )
+
+                keypoints_list.append(
+                    {
+                        "keypoints": keypoints,
+                        "handedness": handedness.classification[0].label,
+                        "confidence": float(handedness.classification[0].score),
+                    }
+                )
+
         return keypoints_list, results
-    
-    def extract_from_frames(
-        self,
-        frames_dir: Path,
-        output_file: Optional[Path] = None
-    ) -> List[Dict]:
+
+    @staticmethod
+    def _parse_frame_idx(img_path: Path) -> int:
         """
-        Extract keypoints from all frames in a directory
-        
-        Args:
-            frames_dir: Directory containing frame images
-            output_file: Optional path to save keypoints JSON
-            
-        Returns:
-            List with keypoints data
+        Extract frame index from filename like: MVI_5177_frame_0007.jpg
+        Returns -1 if not found.
+        """
+        m = re.search(r"_frame_(\d+)", img_path.stem)
+        return int(m.group(1)) if m else -1
+
+    def extract_from_frames(self, frames_dir: Path, output_file: Optional[Path] = None) -> List[Dict]:
+        """
+        Extract keypoints from all frames inside a gesture directory.
+
+        NOTE: Your frames are stored like:
+          data/frames/<Category>/<Gesture>/<VideoID>/<frame>.jpg
+        So we use rglob to find all frames under frames_dir recursively.
         """
         if not frames_dir.exists():
-            logger.error(f"Frames directory not found: {frames_dir}")
             raise FileNotFoundError(f"Frames directory not found: {frames_dir}")
-        
-        # Get all image files
-        image_files = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.jpeg")) + list(frames_dir.glob("*.png")))
-        
+
+        image_files = sorted(
+            list(frames_dir.rglob("*.jpg"))
+            + list(frames_dir.rglob("*.jpeg"))
+            + list(frames_dir.rglob("*.png"))
+        )
+
         if not image_files:
             logger.warning(f"No image files found in {frames_dir}")
             return []
-        
-        logger.info(f"Extracting keypoints from {len(image_files)} frames")
-        
-        all_keypoints = []
-        
-        for img_path in tqdm(image_files, desc="Extracting keypoints"):
+
+        logger.info(f"Extracting keypoints from {len(image_files)} frames under {frames_dir}")
+
+        all_keypoints: List[Dict] = []
+        for img_path in tqdm(image_files, desc=f"Extracting keypoints ({frames_dir.name})"):
             image = cv2.imread(str(img_path))
             if image is None:
                 logger.warning(f"Failed to read image: {img_path}")
                 continue
-            
-            keypoints_list, _ = self.extract_from_image(image)
-            
-            # Store frame keypoints
+
+            hands_list, _ = self.extract_from_image(image)
+
+            # video_id is the immediate parent folder (e.g., "MVI_5177")
+            video_id = img_path.parent.name
+            frame_idx = self._parse_frame_idx(img_path)
+
             frame_data = {
-                'frame_name': img_path.name,
-                'hands': keypoints_list
+                "video_id": video_id,
+                "frame_idx": frame_idx,
+                "frame_path": str(img_path.relative_to(frames_dir)),
+                "hands": hands_list,
             }
             all_keypoints.append(frame_data)
-        
-        # Save to JSON if output file specified
+
+        # Ensure stable ordering for sequence building later
+        all_keypoints.sort(key=lambda x: (x.get("video_id", ""), x.get("frame_idx", -1), x.get("frame_path", "")))
+
         if output_file:
             output_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_file, 'w') as f:
+            with open(output_file, "w") as f:
                 json.dump(all_keypoints, f, indent=2)
             logger.info(f"Keypoints saved to {output_file}")
-        
+
         return all_keypoints
-    
-    def normalize_keypoints(
-        self,
-        keypoints: List[Dict]
-    ) -> List[Dict]:
+
+    def normalize_keypoints(self, hands: List[Dict]) -> List[Dict]:
         """
-        Normalize keypoints to [0, 1] range
-        
-        Args:
-            keypoints: List of keypoint dictionaries
-            
-        Returns:
-            Normalized keypoints
+        Normalize keypoints for each detected hand to [0, 1] per-dimension.
+        If keypoints are missing/malformed, returns them unchanged or empty.
         """
-        if not keypoints:
-            return keypoints
-        
-        normalized = []
-        
-        for hand_data in keypoints:
-            kps = hand_data['keypoints']
-            
-            # Extract coordinates
-            coords = np.array([[kp['x'], kp['y'], kp['z']] for kp in kps])
-            
-            # Normalize each dimension
+        if not hands:
+            return []
+
+        normalized_hands: List[Dict] = []
+        for hand_data in hands:
+            kps = hand_data.get("keypoints", [])
+            if not kps:
+                continue
+
+            coords = np.array([[kp["x"], kp["y"], kp["z"]] for kp in kps], dtype=np.float32)  # (21,3)
+
+            # Normalize x,y,z independently
             for dim in range(3):
-                min_val = coords[:, dim].min()
-                max_val = coords[:, dim].max()
-                
+                min_val = float(coords[:, dim].min())
+                max_val = float(coords[:, dim].max())
                 if max_val - min_val > 1e-6:
                     coords[:, dim] = (coords[:, dim] - min_val) / (max_val - min_val)
                 else:
                     coords[:, dim] = 0.0
-            
-            # Create normalized keypoints
+
             normalized_kps = []
             for i, kp in enumerate(kps):
-                normalized_kps.append({
-                    'x': float(coords[i, 0]),
-                    'y': float(coords[i, 1]),
-                    'z': float(coords[i, 2]),
-                    'visibility': kp['visibility']
-                })
-            
-            normalized.append({
-                'keypoints': normalized_kps,
-                'handedness': hand_data['handedness'],
-                'confidence': hand_data['confidence']
-            })
-        
-        return normalized
-    
-    def process_dataset(
-        self,
-        dataset_dir: Path,
-        output_dir: Path
-    ) -> Dict:
+                normalized_kps.append(
+                    {
+                        "x": float(coords[i, 0]),
+                        "y": float(coords[i, 1]),
+                        "z": float(coords[i, 2]),
+                        "visibility": float(kp.get("visibility", 1.0)),
+                    }
+                )
+
+            normalized_hands.append(
+                {
+                    "keypoints": normalized_kps,
+                    "handedness": hand_data.get("handedness"),
+                    "confidence": float(hand_data.get("confidence", 0.0)),
+                }
+            )
+
+        return normalized_hands
+
+    def process_dataset(self, dataset_dir: Path, output_dir: Path) -> Dict:
         """
-        Process entire dataset directory structure
-        
-        Args:
-            dataset_dir: Root directory with category/gesture/frames structure
-            output_dir: Directory to save extracted keypoints
-            
-        Returns:
-            Processing statistics
+        Process entire dataset directory structure:
+          dataset_dir/<Category>/<Gesture>/...frames...
+
+        Saves:
+          output_dir/<Category>/<Gesture>/keypoints.json
+          output_dir/complete_keypoints.json
         """
         if not dataset_dir.exists():
-            logger.error(f"Dataset directory not found: {dataset_dir}")
             raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
-        
+
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        stats = {
-            'categories': 0,
-            'gestures': 0,
-            'total_frames': 0,
-            'hands_detected': 0
-        }
-        
-        all_data = {}
-        
-        # Iterate through categories
+
+        stats = {"categories": 0, "gestures": 0, "total_frames": 0, "hands_detected": 0}
+        all_data: Dict[str, Dict[str, List[Dict]]] = {}
+
         for category_dir in dataset_dir.iterdir():
             if not category_dir.is_dir():
                 continue
-            
+
             category_name = category_dir.name
             all_data[category_name] = {}
-            stats['categories'] += 1
-            
+            stats["categories"] += 1
             logger.info(f"Processing category: {category_name}")
-            
-            # Iterate through gestures
+
             for gesture_dir in category_dir.iterdir():
                 if not gesture_dir.is_dir():
                     continue
-                
+
                 gesture_name = gesture_dir.name
-                stats['gestures'] += 1
-                
+                stats["gestures"] += 1
                 logger.info(f"  Processing gesture: {gesture_name}")
-                
-                # Extract keypoints from frames
+
                 keypoints_data = self.extract_from_frames(gesture_dir)
-                
-                # Normalize keypoints
-                normalized_data = []
+
+                normalized_data: List[Dict] = []
                 for frame_data in keypoints_data:
-                    normalized_hands = self.normalize_keypoints(frame_data['hands'])
-                    normalized_data.append({
-                        'frame_name': frame_data['frame_name'],
-                        'hands': normalized_hands
-                    })
-                    
-                    stats['total_frames'] += 1
+                    normalized_hands = self.normalize_keypoints(frame_data.get("hands", []))
+
+                    # Count stats
+                    stats["total_frames"] += 1
                     if normalized_hands:
-                        stats['hands_detected'] += len(normalized_hands)
-                
+                        stats["hands_detected"] += len(normalized_hands)
+
+                    normalized_data.append(
+                        {
+                            "video_id": frame_data.get("video_id"),
+                            "frame_idx": frame_data.get("frame_idx"),
+                            "frame_path": frame_data.get("frame_path"),
+                            "hands": normalized_hands,
+                        }
+                    )
+
                 all_data[category_name][gesture_name] = normalized_data
-                
-                # Save individual gesture keypoints
+
+                # Save per-gesture
                 gesture_output_dir = output_dir / category_name / gesture_name
                 gesture_output_dir.mkdir(parents=True, exist_ok=True)
-                
-                output_file = gesture_output_dir / 'keypoints.json'
-                with open(output_file, 'w') as f:
+                with open(gesture_output_dir / "keypoints.json", "w") as f:
                     json.dump(normalized_data, f, indent=2)
-        
+
         # Save complete dataset
-        complete_output = output_dir / 'complete_keypoints.json'
-        with open(complete_output, 'w') as f:
+        complete_output = output_dir / "complete_keypoints.json"
+        with open(complete_output, "w") as f:
             json.dump(all_data, f, indent=2)
-        
+
         logger.info(f"Dataset processing complete: {stats}")
         return stats
-    
+
     def __del__(self):
-        """Cleanup resources"""
-        if hasattr(self, 'hands') and self.hands is not None:
+        if getattr(self, "hands", None) is not None:
             try:
                 self.hands.close()
-            except:
+            except Exception:
                 pass
-
-
-if __name__ == "__main__":
-    # Test keypoint extractor
-    from src.utils import setup_logger
-    
-    setup_logger(log_dir=Path("logs"), log_level="INFO")
-    
-    extractor = KeypointExtractor(
-        max_num_hands=2,
-        min_detection_confidence=0.7
-    )
-    
-    # Example usage
-    # extractor.process_dataset(
-    #     dataset_dir=Path("data/frames"),
-    #     output_dir=Path("data/keypoints")
-    # )
-
-# Made with Bob
