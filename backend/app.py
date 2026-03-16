@@ -7,6 +7,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sys
 from pathlib import Path
+import tempfile
+
 import torch
 import cv2
 import numpy as np
@@ -22,6 +24,8 @@ from src.preprocessing import KeypointExtractor
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# Upload limit (bytes)
 app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024  # 300 MB
 
 # Setup logging
@@ -63,6 +67,48 @@ def _handlist_to_vec63(keypoints_list):
     return arr.reshape(-1)  # (63,)
 
 
+def _sequence_from_video(video_path: Path, seq_len: int = 45) -> tuple[np.ndarray, dict]:
+    """
+    Build a (seq_len, 63) sequence by sampling frames evenly across the video
+    and extracting hand keypoints per frame.
+
+    Returns: (sequence, stats)
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+
+    stats = {
+        "total_frames": total_frames,
+        "fps": float(fps),
+        "frames_sampled": seq_len,
+        "hands_detected_frames": 0,
+    }
+
+    seq = np.zeros((seq_len, 63), dtype=np.float32)
+
+    if total_frames <= 0:
+        cap.release()
+        return seq, stats
+
+    idxs = np.linspace(0, max(total_frames - 1, 0), seq_len).astype(int)
+
+    for i, frame_idx in enumerate(idxs):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+
+        keypoints_list, _ = keypoint_extractor.extract_from_image(frame)
+        if keypoints_list:
+            stats["hands_detected_frames"] += 1
+
+        seq[i] = _handlist_to_vec63(keypoints_list)
+
+    cap.release()
+    return seq, stats
+
+
 def initialize_model():
     """Initialize the gesture recognition model + keypoint extractor"""
     global model, keypoint_extractor, device, label_map, id_to_label
@@ -87,9 +133,10 @@ def initialize_model():
         except Exception:
             label_map = None
 
-        # If config label_map exists, infer classes from it; otherwise fallback to config num_classes
-        num_classes = len(label_map) if label_map else int(config.get("dataset.num_classes", config.get_num_classes()))
+        # Infer num_classes
+        num_classes = len(label_map) if label_map else int(config.get_num_classes())
 
+        # Create model
         model = create_model(
             model_type=config.get("model.architecture", "lstm"),
             input_size=63,
@@ -108,17 +155,15 @@ def initialize_model():
             if "model_state_dict" in checkpoint:
                 model.load_state_dict(checkpoint["model_state_dict"])
             elif "model_state" in checkpoint:
-                # tolerate alternative key name
                 model.load_state_dict(checkpoint["model_state"])
             else:
                 raise KeyError("Checkpoint missing model weights (expected model_state_dict or model_state)")
 
             # Prefer label_map from checkpoint if present
-            if "label_map" in checkpoint and checkpoint["label_map"]:
+            if isinstance(checkpoint.get("label_map"), dict) and checkpoint["label_map"]:
                 label_map = checkpoint["label_map"]
 
             id_to_label = _build_id_to_label(label_map)
-
             logger.info(f"Loaded model from {model_path}")
         else:
             logger.warning("No trained model found at models/checkpoints/best_model.pth. Using untrained model.")
@@ -174,7 +219,7 @@ def get_config():
 def predict_image():
     """
     Predict gesture from an uploaded image.
-    Note: LSTM expects sequences; here we pad a (seq_len,63) sequence with zeros and put this frame at the end.
+    LSTM expects sequences; we pad a (45,63) sequence with zeros and place this frame at the end.
     """
     try:
         if model is None or keypoint_extractor is None or device is None:
@@ -200,7 +245,6 @@ def predict_image():
                 }
             )
 
-        # Build padded sequence
         seq_len = 45
         x0 = _handlist_to_vec63(keypoints_list)
         seq = np.zeros((seq_len, 63), dtype=np.float32)
@@ -209,7 +253,7 @@ def predict_image():
         xb = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)  # (1,45,63)
 
         with torch.no_grad():
-            logits = model(xb)  # (1,C)
+            logits = model(xb)
             probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
 
         pred_id = int(np.argmax(probs))
@@ -235,16 +279,61 @@ def predict_image():
 @app.route("/api/predict/video", methods=["POST"])
 def predict_video():
     """
-    Placeholder: your frontend may call this for uploaded videos.
-    Implementing full video->sequence inference is next step.
+    Predict gesture from uploaded video using sequence-based inference:
+    - sample 45 frames evenly
+    - extract 63-d hand vector per frame
+    - run LSTM on (45,63)
     """
-    return jsonify(
-        {
-            "prediction": "Video inference not implemented yet",
-            "confidence": 0.0,
-            "message": "Use /api/predict/image for now or implement video sequence inference.",
-        }
-    )
+    try:
+        if model is None or keypoint_extractor is None or device is None:
+            return jsonify({"error": "Model not initialized"}), 500
+
+        if "video" not in request.files:
+            return jsonify({"error": "No video provided (expected form field name: video)"}), 400
+
+        f = request.files["video"]
+        if not f.filename:
+            return jsonify({"error": "Empty filename"}), 400
+
+        # Save to a temp file (keep suffix if possible)
+        suffix = Path(f.filename).suffix or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            f.save(str(tmp_path))
+
+        seq_len = 45
+        seq, stats = _sequence_from_video(tmp_path, seq_len=seq_len)
+
+        # Cleanup temp file
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        xb = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)  # (1,45,63)
+
+        with torch.no_grad():
+            logits = model(xb)
+            probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+
+        pred_id = int(np.argmax(probs))
+        conf = float(probs[pred_id])
+
+        pred_label = str(pred_id)
+        if id_to_label and pred_id in id_to_label:
+            pred_label = id_to_label[pred_id]
+
+        return jsonify(
+            {
+                "prediction": pred_label,
+                "confidence": conf,
+                "stats": stats,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error in predict_video: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/train/status", methods=["GET"])
